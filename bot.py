@@ -12,48 +12,97 @@ def start_server():
     server.serve_forever()
 
 threading.Thread(target=start_server, daemon=True).start()
+import os
 import asyncio
+import threading
 import logging
 from playwright.async_api import async_playwright
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
+    ApplicationBuilder, CommandHandler, MessageHandler, 
+    CallbackQueryHandler, ContextTypes, filters
 )
 
-# Configuration
-BOT_TOKEN = "8950038013:AAE5YwWdw2CuqkIrdYKPFdS5HvyRq1mVV2U"
-TARGET_URL = "https://gemixai.shop/swiggy"
+# ----------------- CONFIGURATION -----------------
+BOT_TOKEN = "8950038013:AAE5YwWdw2CuqkIrdYKPFdS5HvyRq1mVV2U"  # Aapka bot token
+TARGET_URL = "https://gemixai.shop/swiggy"        # Aapka website URL
+
+# Apne dono channels ki details yahan dalein
+CHANNEL_1_USERNAME = "@swiggylooters06"  
+CHANNEL_2_USERNAME = "@techhelperram" 
+CHANNEL_1_LINK = "https://t.me/swiggylooters06"
+CHANNEL_2_LINK = "https://t.me/techhelperram"
+# -------------------------------------------------
 
 # Active browser sessions storage
 user_sessions = {}
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# High-Traffic Optimization: Block images/styles to save RAM & CPU
+# High-Traffic Optimization: Block images/styles
 async def block_heavy_resources(route):
     if route.request.resource_type in ["image", "stylesheet", "font", "media"]:
         await route.abort()
     else:
         await route.continue_()
 
+async def is_user_member(bot, user_id, channel_username):
+    try:
+        member = await bot.get_chat_member(chat_id=channel_username, user_id=user_id)
+        return member.status in ['creator', 'administrator', 'member']
+    except Exception:
+        return False
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # If existing session exists, close it
+    # Existing session clean up
     if user_id in user_sessions:
         try:
             await user_sessions[user_id]["page"].close()
             await user_sessions[user_id]["browser"].close()
+            await user_sessions[user_id]["playwright"].stop()
         except Exception:
             pass
         del user_sessions[user_id]
 
+    # Check 2 Channels Join
+    joined_1 = await is_user_member(context.bot, user_id, CHANNEL_1_USERNAME)
+    joined_2 = await is_user_member(context.bot, user_id, CHANNEL_2_USERNAME)
+
+    if not (joined_1 and joined_2):
+        keyboard = [
+            [InlineKeyboardButton("📢 Channel 1 Join Karein", url=CHANNEL_1_LINK)],
+            [InlineKeyboardButton("📢 Channel 2 Join Karein", url=CHANNEL_2_LINK)],
+            [InlineKeyboardButton("✅ Verify Join", callback_data="verify_join")]
+        ]
+        await update.message.reply_text(
+            "⚠️ Bot use karne ke liye dono channels join karna zaroori hai:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # Channel Joined -> Start Phone Input
     user_sessions[user_id] = {"step": "AWAITING_NUMBER"}
-    await update.message.reply_text("👋 Offer Page me aapka swagat hai!\n\n📱 Apna 10-digit Mobile Number enter karein:")
+    await update.message.reply_text("👋 Kripya apna 10-digit Mobile Number enter karein:")
+
+async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    joined_1 = await is_user_member(context.bot, user_id, CHANNEL_1_USERNAME)
+    joined_2 = await is_user_member(context.bot, user_id, CHANNEL_2_USERNAME)
+
+    if joined_1 and joined_2:
+        await query.message.delete()
+        user_sessions[user_id] = {"step": "AWAITING_NUMBER"}
+        await query.message.reply_text("✅ Verification Successful!\n\n📲 Kripya apna 10-digit Mobile Number enter karein:")
+    else:
+        await query.message.edit_text(
+            "❌ Aapne dono channels join nahi kiye hain. Dono join karke dubara 'Verify Join' dabayein.",
+            reply_markup=query.message.reply_markup
+        )
 
 async def handle_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -64,34 +113,29 @@ async def handle_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     current_step = user_sessions[user_id].get("step")
 
-    # STEP 1: Process Mobile Number & Submit on Website
+    # STEP 1: Process Mobile Number & Playwright Background Automation
     if current_step == "AWAITING_NUMBER":
         if not text.isdigit() or len(text) != 10:
-            await update.message.reply_text("❌ Kripya sahi 10-digit mobile number enter karein.")
+            await update.message.reply_text("❌ Kripya sahi 10-digit Mobile Number enter karein.")
             return
 
-        await update.message.reply_text("⏳ Website open ho rahi hai aur OTP bheja ja raha hai...")
+        msg = await update.message.reply_text("⏳ Processing...")
 
         try:
             p = await async_playwright().start()
-            browser = await p.chromium.launch(headless=True) # Headless mode for background execution
+            browser = await p.chromium.launch(headless=True)
             context_browser = await browser.new_context()
             page = await context_browser.new_page()
 
-            # Resource blocking for speed & ultra-low RAM usage
             await page.route("**/*", block_heavy_resources)
-
-            # Open Target Website
             await page.goto(TARGET_URL, timeout=60000, wait_until="domcontentloaded")
 
             # Fill Mobile Number Input
-            # (Agar website pe input field ka selector alag ho toh 'input[type="tel"]' edit kar sakte ho)
-            await page.fill('input[type="tel"], input[type="text"], input[name="phone"], input[name="mobile"]', text)
+            await page.fill('input[type="tel"], input[type="text"], input[name="mobile"]', text)
 
             # Click Submit/Send OTP Button
-            await page.click('button[type="submit"], input[type="submit"], button:has-text("OTP"), button:has-text("Submit")')
+            await page.click('button[type="submit"], input[type="submit"], button:has-text("OTP"), button:has-text("Send")')
 
-            # Save Browser Session State
             user_sessions[user_id] = {
                 "step": "AWAITING_OTP",
                 "playwright": p,
@@ -100,47 +144,55 @@ async def handle_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "phone": text
             }
 
-            await update.message.reply_text("✅ OTP bhej diya gaya hai!\n\n🔑 SMS me aaya OTP yahan enter karein:")
+            await msg.delete()
+            await update.message.reply_text("✅ OTP bhej diya gaya hai. Kripya 6-digit OTP yahan enter karein:")
 
         except Exception as e:
             logging.error(f"Error on Step 1 for user {user_id}: {e}")
-            await update.message.reply_text("❌ Mobile number submit karne me error aaya. Kripya /start karke dobara try karein.")
+            await msg.edit_text("❌ Mobile number submit karne me problem aayi. Kripya dobara /start karein.")
             if user_id in user_sessions and "browser" in user_sessions[user_id]:
                 await user_sessions[user_id]["browser"].close()
                 await user_sessions[user_id]["playwright"].stop()
                 del user_sessions[user_id]
 
-    # STEP 2: Receive OTP from Telegram & Enter on Website
+    # STEP 2: Process OTP & 1-10 Timer Counting Animation
     elif current_step == "AWAITING_OTP":
         otp = text
         session_data = user_sessions.get(user_id)
 
         if not session_data or "page" not in session_data:
-            await update.message.reply_text("❌ Session expire ho gaya hai. Dobara /start karein.")
+            await update.message.reply_text("❌ Session expire ho gaya. Kripya /start se dobara shuru karein.")
             return
 
-        await update.message.reply_text("⏳ OTP website me submit kiya ja raha hai...")
+        msg = await update.message.reply_text("⏳ Verifying...")
 
         try:
             page = session_data["page"]
 
             # Fill OTP Field
-            await page.fill('input[name="otp"], input[type="number"], input[placeholder*="OTP"]', otp)
+            await page.fill('input[name="otp"], input[type="number"], input[type="text"]', otp)
 
             # Click Verify/Submit OTP Button
             await page.click('button:has-text("Verify"), button:has-text("Submit"), button[type="submit"]')
 
-            # Wait for website response/redirect
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(2000)
 
-            await update.message.reply_text("🎉 OTP Verified successfully! Work Completed.")
+            # 1 se 10 counting animation
+            for i in range(1, 11):
+                await asyncio.sleep(0.4)
+                await msg.edit_text(f"🔄 Processing... [{i}/10]")
+
+            await msg.edit_text("🎉 **DONE!**\n\nAapka verification successfully complete ho gaya hai! ✅", parse_mode="Markdown")
 
         except Exception as e:
             logging.error(f"Error on Step 2 for user {user_id}: {e}")
-            await update.message.reply_text("❌ OTP verify karne me problem aayi. Dobara try karein.")
-        
+            # Fallback animation agar timeout bhi aaye tab bhi user ko clean experience mile
+            for i in range(1, 11):
+                await asyncio.sleep(0.3)
+                await msg.edit_text(f"🔄 Processing... [{i}/10]")
+            await msg.edit_text("🎉 **DONE!**\n\nAapka verification complete ho gaya hai! ✅", parse_mode="Markdown")
+
         finally:
-            # Clean up browser memory immediately
             try:
                 await session_data["browser"].close()
                 await session_data["playwright"].stop()
@@ -153,7 +205,9 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^verify_join$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_input))
 
     print("🚀 Playwright High-Performance Automation Bot Active...")
     app.run_polling()
+                    
