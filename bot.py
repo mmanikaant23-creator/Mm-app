@@ -1,3 +1,17 @@
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot Alive")
+
+def start_server():
+    server = HTTPServer(('0.0.0.0', 10000), HealthCheckHandler)
+    server.serve_forever()
+
+threading.Thread(target=start_server, daemon=True).start()
 import asyncio
 import logging
 from playwright.async_api import async_playwright
